@@ -1,15 +1,16 @@
 using APBD_Task_6.DTOs;
+using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
 
 namespace APBD_Task_6.Controllers;
 [ApiController]
-[Route("api/[controller]")]
-public class AppointmentController : ControllerBase
+[Microsoft.AspNetCore.Mvc.Route("api/[controller]")]
+public class AppointmentsController : ControllerBase
 {
     private readonly string _connectionString;
 
-    public AppointmentController(IConfiguration configuration)
+    public AppointmentsController(IConfiguration configuration)
     {
         _connectionString = configuration.GetConnectionString("DefaultConnection") ?? throw new InvalidOperationException();
     }
@@ -60,6 +61,51 @@ public class AppointmentController : ControllerBase
         
         
         return Ok(results);
+    }
+
+    [HttpGet("{id:int}")]
+    public async Task<IActionResult> GetAppointment([FromRoute] int id)
+    {
+        const string sql = """
+                           SELECT
+                               a.AppointmentDate,
+                               a.Status,
+                               a.Reason,
+                               a.InternalNotes,
+                               a.CreatedAt,
+                               p.FirstName + N' ' + p.LastName AS PatientFullName,
+                               p.Email AS PatientEmail,
+                               p.PhoneNumber AS PatientPhoneNumber,
+                               d.FirstName + N' ' + d.LastName AS DoctorFullName,
+                               d.LicenseNumber AS DoctorLicenseNumber
+                           FROM dbo.Appointments a
+                           JOIN dbo.Patients p ON p.IdPatient = a.IdPatient
+                           JOIN dbo.Doctors d ON d.IdDoctor = a.IdDoctor
+                           WHERE a.IdAppointment = @IdAppointment;
+                           """;
+        await using var connection = new SqlConnection(_connectionString);
+        await using var command = new SqlCommand(sql, connection);
+        command.Parameters.AddWithValue("@IdAppointment", id);
+        await connection.OpenAsync();
+        await using var reader = await command.ExecuteReaderAsync();
+        if (await reader.ReadAsync())
+        {
+            var appointmentDetailsDto = new AppointmentDetailsDto
+            {
+                AppointmentDate = reader.GetDateTime(0),
+                Status = reader.GetString(1),
+                Reason = reader.GetString(2),
+                InternalNotes = reader.IsDBNull(3) ? null : reader.GetString(3),
+                CreatedAt = reader.GetDateTime(4),
+                PatientFullName = reader.GetString(5),
+                PatientEmail = reader.GetString(6),
+                PatientPhoneNumber = reader.GetString(7),
+                DoctorFullName = reader.GetString(8),
+                DoctorLicenseNumber = reader.GetString(9)
+            };
+            return Ok(appointmentDetailsDto);
+        }
+        return NotFound();
     }
 
     [HttpPost]
