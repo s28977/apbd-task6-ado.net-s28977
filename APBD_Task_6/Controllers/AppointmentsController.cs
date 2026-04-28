@@ -115,29 +115,86 @@ public class AppointmentsController : ControllerBase
         {
             return BadRequest(new ErrorResponseDto("Appointment date is in the past"));
         }
-        
+
         await using var connection = new SqlConnection(_connectionString);
         await connection.OpenAsync();
-
-        int newId;
-
-        await using (var transaction = (SqlTransaction)await connection.BeginTransactionAsync())
+        
+        const string patientCheckQuery = """
+                                         SELECT IsActive FROM dbo.Patients
+                                         WHERE IdPatient = @IdPatient
+                                         """;
+        await using (var patientCheckCommand = new SqlCommand(patientCheckQuery, connection))
         {
-            const string sql = """
-                               INSERT INTO dbo.Appointments (IdPatient, IdDoctor, AppointmentDate, Reason, Status)
-                               OUTPUT INSERTED.IdAppointment
-                               VALUES (@IdPatient, @IdDoctor, @AppointmentDate, @Reason, 'Scheduled')
-                               """;
-            await using var command = new SqlCommand(sql, connection, transaction);
-            command.Parameters.AddWithValue("@IdPatient", request.IdPatient);
-            command.Parameters.AddWithValue("@IdDoctor", request.IdDoctor); 
-            command.Parameters.AddWithValue("@AppointmentDate", request.AppointmentDate);
-            command.Parameters.AddWithValue("@Reason", request.Reason);
-
-            newId = (int)(await command.ExecuteScalarAsync())!;
-            await transaction.CommitAsync();
+            patientCheckCommand.Parameters.AddWithValue("@IdPatient", request.IdPatient);
+        
+            await using var  patientCheckReader = await patientCheckCommand.ExecuteReaderAsync();
+            
+            if (!await patientCheckReader.ReadAsync())
+            {
+                return BadRequest(new ErrorResponseDto("Patient not found"));
+            }
+            var isActive = patientCheckReader.GetBoolean(0);
+            if (!isActive)
+            {
+                return BadRequest(new ErrorResponseDto("Patient is not active"));
+            }
         }
         
-        return CreatedAtRoute(nameof(GetAppointments), new { IdAppointment = newId }, null);
+        const string doctorCheckQuery =  """
+                                         SELECT IsActive FROM dbo.Doctors
+                                         WHERE IdDoctor = @IdDoctor
+                                         """;
+        await using (var doctorCheckCommand = new SqlCommand(doctorCheckQuery, connection))
+        {
+            doctorCheckCommand.Parameters.AddWithValue("@IdDoctor", request.IdDoctor);
+        
+            await using var  doctorCheckReader = await doctorCheckCommand.ExecuteReaderAsync();
+        
+            if (!await doctorCheckReader.ReadAsync())
+            {
+                return BadRequest(new ErrorResponseDto("Doctor not found"));
+            }
+            var isActive = doctorCheckReader.GetBoolean(0);
+            if (!isActive)
+            {
+                return BadRequest(new ErrorResponseDto("Doctor is not active"));
+            }
+        }
+        
+        const string conflictQuery = """
+                                     SELECT 1
+                                     FROM dbo.Appointments
+                                     WHERE IdDoctor = @IdDoctor
+                                       AND AppointmentDate = @AppointmentDate
+                                       AND Status = 'Scheduled';
+                                     """;
+
+        await using (var conflictCommand = new SqlCommand(conflictQuery, connection))
+        {
+            conflictCommand.Parameters.AddWithValue("@IdDoctor", request.IdDoctor);
+            conflictCommand.Parameters.AddWithValue("@AppointmentDate", request.AppointmentDate);
+            
+            await using var  conflictReader = await conflictCommand.ExecuteReaderAsync();
+            
+            if (await conflictReader.ReadAsync())
+            {
+                return Conflict(new ErrorResponseDto($"Doctor already has an appointment at this time"));
+            }
+        }
+        
+        int newId;
+        const string appointmentInsertQuery = """
+                           INSERT INTO dbo.Appointments (IdPatient, IdDoctor, AppointmentDate, Reason, Status)
+                           OUTPUT INSERTED.IdAppointment
+                           VALUES (@IdPatient, @IdDoctor, @AppointmentDate, @Reason, 'Scheduled')
+                           """;
+        await using var insertCommand = new SqlCommand(appointmentInsertQuery, connection);
+        insertCommand.Parameters.AddWithValue("@IdPatient", request.IdPatient);
+        insertCommand.Parameters.AddWithValue("@IdDoctor", request.IdDoctor); 
+        insertCommand.Parameters.AddWithValue("@AppointmentDate", request.AppointmentDate);
+        insertCommand.Parameters.AddWithValue("@Reason", request.Reason);
+
+        newId = (int)(await insertCommand.ExecuteScalarAsync())!;
+        return CreatedAtAction(nameof(GetAppointment), new { id = newId }, null);
     }
 }
